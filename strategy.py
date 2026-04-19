@@ -19,6 +19,8 @@ class Strategy(BaseStrategy):
     fast_decay = 0.0
     fast_thresh = 0.5
     fast_cool = 6
+    jump_thresh = 3.5
+    jump_cool = 12
 
     def __init__(self):
         super().__init__()
@@ -52,6 +54,9 @@ class Strategy(BaseStrategy):
             self._cool_ask = max(self._cool_ask, self.fast_cool)
         elif self._fast_drift < -self.fast_thresh:
             self._cool_bid = max(self._cool_bid, self.fast_cool)
+        if abs(self._fast_drift) >= self.jump_thresh:
+            self._cool_bid = max(self._cool_bid, self.jump_cool)
+            self._cool_ask = max(self._cool_ask, self.jump_cool)
 
         if bid_t is None or ask_t is None:
             self._prev_gap = 4
