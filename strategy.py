@@ -4,13 +4,13 @@ from orderbook_pm_challenge.types import CancelAll, CancelOrder, PlaceOrder, Sid
 
 class Strategy(BaseStrategy):
     base_size = 4.0
-    spread_scale = 0.5
+    spread_scale = 0.7
     narrow_cool = 7
     wide_cool = 2
     narrow_gap = 4
     arb_thresh = 0.95
-    inventory_cap = 30.0
-    skew_unit = 30.0
+    inventory_cap = 30
+    skew_unit = 30
 
     def __init__(self):
         super().__init__()
@@ -55,10 +55,8 @@ class Strategy(BaseStrategy):
             else: acts.append(CancelOrder(o.order_id))
         if can_bid and not have_bid: acts.append(PlaceOrder(Side.BUY, my_bid_t, bid_sz))
         if can_ask and not have_ask: acts.append(PlaceOrder(Side.SELL, my_ask_t, ask_sz))
-        self._last_bid_sz = bid_sz if (can_bid and (have_bid or not have_bid)) else 0.0
-        self._last_ask_sz = ask_sz if (can_ask and (have_ask or not have_ask)) else 0.0
-        if not can_bid: self._last_bid_sz = 0.0
-        if not can_ask: self._last_ask_sz = 0.0
+        self._last_bid_sz = bid_sz if can_bid else 0.0
+        self._last_ask_sz = ask_sz if can_ask else 0.0
         if self._cool_bid > 0: self._cool_bid -= 1
         if self._cool_ask > 0: self._cool_ask -= 1
         return acts
