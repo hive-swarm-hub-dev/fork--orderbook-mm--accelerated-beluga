@@ -11,6 +11,9 @@ class Strategy(BaseStrategy):
     arb_thresh = 0.95
     inventory_cap = 30
     skew_unit = 30
+    drift_decay = 0.8
+    drift_thresh = 1.0
+    drift_cool = 3
 
     def __init__(self):
         super().__init__()
@@ -19,15 +22,29 @@ class Strategy(BaseStrategy):
         self._prev_gap = 4
         self._last_bid_sz = 0.0
         self._last_ask_sz = 0.0
+        self._prev_mid = None
+        self._drift = 0.0  # signed: + if drifting up (ask side risk)
 
     def on_step(self, state):
+        bid_t = state.competitor_best_bid_ticks
+        ask_t = state.competitor_best_ask_ticks
+        mid = None if (bid_t is None or ask_t is None) else (bid_t + ask_t) / 2.0
+        if self._prev_mid is not None and mid is not None:
+            self._drift = self.drift_decay * self._drift + (mid - self._prev_mid)
+        self._prev_mid = mid
+
         cool = self.narrow_cool if self._prev_gap <= self.narrow_gap else self.wide_cool
         if self._last_bid_sz > 0 and state.buy_filled_quantity >= self.arb_thresh * self._last_bid_sz:
             self._cool_bid = max(self._cool_bid, cool)
         if self._last_ask_sz > 0 and state.sell_filled_quantity >= self.arb_thresh * self._last_ask_sz:
             self._cool_ask = max(self._cool_ask, cool)
-        bid_t = state.competitor_best_bid_ticks
-        ask_t = state.competitor_best_ask_ticks
+
+        # Drift-based defensive cool on the vulnerable side.
+        if self._drift > self.drift_thresh:  # rising -> asks vulnerable
+            self._cool_ask = max(self._cool_ask, self.drift_cool)
+        elif self._drift < -self.drift_thresh:  # falling -> bids vulnerable
+            self._cool_bid = max(self._cool_bid, self.drift_cool)
+
         if bid_t is None or ask_t is None:
             self._prev_gap = 4
             self._last_bid_sz = self._last_ask_sz = 0.0
