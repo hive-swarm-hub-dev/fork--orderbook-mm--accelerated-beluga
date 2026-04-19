@@ -11,9 +11,15 @@ from orderbook_pm_challenge.types import (
 
 
 class Strategy(BaseStrategy):
-    """V6: tighter inventory skew on V5."""
+    """V7: V6 + size scales with competitor spread width.
+
+    When the competitor's visible spread is wider, the competitor ladder is
+    thinner near the true probability, so our inside quote captures more
+    retail flow per unit of quoted size. Scale up proportionally.
+    """
 
     base_size = 4.0
+    spread_scale = 0.3
     cooldown_steps = 5
     inventory_cap = 30.0
     skew_unit = 30.0
@@ -40,32 +46,30 @@ class Strategy(BaseStrategy):
         if my_bid_t >= my_ask_t:
             return [CancelAll()]
 
+        gap = ask_t - bid_t
+        sz = self.base_size * (1.0 + max(0, gap - 2) * self.spread_scale)
+
         net_inv = state.yes_inventory - state.no_inventory
-        bid_size = max(1.0, self.base_size * (1.0 - net_inv / self.skew_unit))
-        ask_size = max(1.0, self.base_size * (1.0 + net_inv / self.skew_unit))
+        bid_size = max(1.0, sz * (1.0 - net_inv / self.skew_unit))
+        ask_size = max(1.0, sz * (1.0 + net_inv / self.skew_unit))
 
         can_bid = self._cool_bid <= 0 and net_inv < self.inventory_cap
         can_ask = self._cool_ask <= 0 and net_inv > -self.inventory_cap
 
         actions: list = []
-        existing_bid = [o for o in state.own_orders if o.side is Side.BUY]
-        existing_ask = [o for o in state.own_orders if o.side is Side.SELL]
-
         have_bid = False
-        for o in existing_bid:
+        have_ask = False
+        for o in state.own_orders:
             if (
-                can_bid
+                o.side is Side.BUY
+                and can_bid
                 and o.price_ticks == my_bid_t
                 and abs(o.remaining_quantity - bid_size) < self.size_tolerance
             ):
                 have_bid = True
-            else:
-                actions.append(CancelOrder(o.order_id))
-
-        have_ask = False
-        for o in existing_ask:
-            if (
-                can_ask
+            elif (
+                o.side is Side.SELL
+                and can_ask
                 and o.price_ticks == my_ask_t
                 and abs(o.remaining_quantity - ask_size) < self.size_tolerance
             ):
