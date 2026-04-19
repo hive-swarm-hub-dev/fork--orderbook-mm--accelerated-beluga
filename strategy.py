@@ -16,6 +16,9 @@ class Strategy(BaseStrategy):
     drift_cool = 3
     mild_drift_thresh = 0.3
     drift_down_mul = 0.3
+    fast_decay = 0.0
+    fast_thresh = 0.5
+    fast_cool = 6
 
     def __init__(self):
         super().__init__()
@@ -24,13 +27,16 @@ class Strategy(BaseStrategy):
         self._last_bid_sz = 0.0; self._last_ask_sz = 0.0
         self._prev_mid = None
         self._drift = 0.0
+        self._fast_drift = 0.0
 
     def on_step(self, state):
         bid_t = state.competitor_best_bid_ticks
         ask_t = state.competitor_best_ask_ticks
         mid = None if (bid_t is None or ask_t is None) else (bid_t + ask_t) / 2.0
         if self._prev_mid is not None and mid is not None:
-            self._drift = self.drift_decay * self._drift + (mid - self._prev_mid)
+            d = mid - self._prev_mid
+            self._drift = self.drift_decay * self._drift + d
+            self._fast_drift = self.fast_decay * self._fast_drift + d
         self._prev_mid = mid
         cool = self.narrow_cool if self._prev_gap <= self.narrow_gap else self.wide_cool
         if self._last_bid_sz > 0 and state.buy_filled_quantity >= self.arb_thresh * self._last_bid_sz:
@@ -41,6 +47,12 @@ class Strategy(BaseStrategy):
             self._cool_ask = max(self._cool_ask, self.drift_cool)
         elif self._drift < -self.drift_thresh:
             self._cool_bid = max(self._cool_bid, self.drift_cool)
+        # Fast drift: catches sudden jumps that haven't yet built up the slow EWMA.
+        if self._fast_drift > self.fast_thresh:
+            self._cool_ask = max(self._cool_ask, self.fast_cool)
+        elif self._fast_drift < -self.fast_thresh:
+            self._cool_bid = max(self._cool_bid, self.fast_cool)
+
         if bid_t is None or ask_t is None:
             self._prev_gap = 4
             self._last_bid_sz = self._last_ask_sz = 0.0
