@@ -11,15 +11,15 @@ from orderbook_pm_challenge.types import (
 
 
 class Strategy(BaseStrategy):
-    """V7: V6 + size scales with competitor spread width.
+    """V8: V7 with spread_scale 0.3 -> 0.5.
 
-    When the competitor's visible spread is wider, the competitor ladder is
-    thinner near the true probability, so our inside quote captures more
-    retail flow per unit of quoted size. Scale up proportionally.
+    Ramp up size more aggressively when competitor spread is wide. Sweep
+    showed 0.5 beats 0.3 by ~0.2 on four-seed mean; 0.7 starts to plateau
+    and 1.0 begins to hurt (inventory-cap-bound at wide spreads).
     """
 
     base_size = 4.0
-    spread_scale = 0.3
+    spread_scale = 0.5
     cooldown_steps = 5
     inventory_cap = 30.0
     skew_unit = 30.0
@@ -60,19 +60,21 @@ class Strategy(BaseStrategy):
         have_bid = False
         have_ask = False
         for o in state.own_orders:
-            if (
+            ok_b = (
                 o.side is Side.BUY
                 and can_bid
                 and o.price_ticks == my_bid_t
                 and abs(o.remaining_quantity - bid_size) < self.size_tolerance
-            ):
-                have_bid = True
-            elif (
+            )
+            ok_a = (
                 o.side is Side.SELL
                 and can_ask
                 and o.price_ticks == my_ask_t
                 and abs(o.remaining_quantity - ask_size) < self.size_tolerance
-            ):
+            )
+            if ok_b:
+                have_bid = True
+            elif ok_a:
                 have_ask = True
             else:
                 actions.append(CancelOrder(o.order_id))
