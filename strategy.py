@@ -3,19 +3,19 @@ from orderbook_pm_challenge.strategy import BaseStrategy
 from orderbook_pm_challenge.types import CancelAll, CancelOrder, PlaceOrder, Side, StepState
 
 class Strategy(BaseStrategy):
-    base_size = 4.0
+    base_size = 5.0
     spread_scale = 0.7
     narrow_cool = 7
     wide_cool = 2
     narrow_gap = 4
     arb_thresh = 0.95
-    inventory_cap = 30
-    skew_unit = 30
+    inventory_cap = 40
+    skew_unit = 20
     drift_decay = 0.80
     drift_thresh = 1.0
     drift_cool = 3
     mild_drift_thresh = 0.3
-    drift_down_mul = 0.2
+    drift_down_mul = 0.3
 
     def __init__(self):
         super().__init__()
