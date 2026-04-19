@@ -11,17 +11,12 @@ from orderbook_pm_challenge.types import (
 
 
 class Strategy(BaseStrategy):
-    """V5: persistent quoting + post-fill cooldown + inventory-skewed size.
-
-    Builds on V4: preserve FIFO priority by reusing existing orders when their
-    tick matches the current target, only cancelling/replacing when the target
-    has shifted. Keeps the same inside-spread placement and cooldown logic.
-    """
+    """V6: tighter inventory skew on V5."""
 
     base_size = 4.0
     cooldown_steps = 5
     inventory_cap = 30.0
-    skew_unit = 50.0
+    skew_unit = 30.0
     size_tolerance = 0.5
 
     def __init__(self) -> None:
