@@ -7,3 +7,4 @@ results.tsv
 /tmp/obpm_out_*.json
 .hive/
 .hive
+run.*.log
