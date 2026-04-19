@@ -1,0 +1,2 @@
+# No external dependencies — pure Python stdlib only.
+# The vendored orderbook_pm_challenge package is installed via prepare.sh.
