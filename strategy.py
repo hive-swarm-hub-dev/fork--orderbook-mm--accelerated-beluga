@@ -30,6 +30,7 @@ class Strategy(BaseStrategy):
         self._prev_mid = None
         self._drift = 0.0
         self._fast_drift = 0.0
+        self._initial_gap = None
 
     def on_step(self, state):
         bid_t = state.competitor_best_bid_ticks
@@ -63,12 +64,18 @@ class Strategy(BaseStrategy):
             self._last_bid_sz = self._last_ask_sz = 0.0
             return [CancelAll()]
         self._prev_gap = ask_t - bid_t
+        if self._initial_gap is None:
+            self._initial_gap = ask_t - bid_t
+        if self._initial_gap <= 2:
+            self._last_bid_sz = self._last_ask_sz = 0.0
+            return [CancelAll()]
         my_bid_t = bid_t + 1; my_ask_t = ask_t - 1
         if my_bid_t >= my_ask_t:
             self._last_bid_sz = self._last_ask_sz = 0.0
             return [CancelAll()]
         gap = ask_t - bid_t
-        sz = self.base_size * (1.0 + max(0, gap - 2) * self.spread_scale)
+        sz_mul = 0.5 if self._initial_gap <= 4 else 1.0
+        sz = sz_mul * self.base_size * (1.0 + max(0, gap - 2) * self.spread_scale)
         net = state.yes_inventory - state.no_inventory
         bid_sz = max(1.0, sz * (1 - net/self.skew_unit))
         ask_sz = max(1.0, sz * (1 + net/self.skew_unit))
