@@ -1,61 +1,76 @@
 from __future__ import annotations
+
 from orderbook_pm_challenge.strategy import BaseStrategy
-from orderbook_pm_challenge.types import CancelAll, CancelOrder, PlaceOrder, Side, StepState
+from orderbook_pm_challenge.types import (
+    CancelAll,
+    CancelOrder,
+    PlaceOrder,
+    Side,
+    StepState,
+)
+
 
 class Strategy(BaseStrategy):
+    """V19: V18 minus fast single-step cool.
+
+    20-seed × 200-sim stability test showed fast_cool was noise-driven:
+    removing it was net-neutral (10.92 vs 10.85). Slow drift EWMA + jump
+    cool already catch sustained and extreme cases; the middle-tier fast
+    cool wasn't adding signal. Simpler = fewer overfit parameters.
+
+    Jump cool is load-bearing (-0.39 without). Mild drift shrink kept.
+    """
+
     base_size = 5.0
     spread_scale = 0.7
     narrow_cool = 7
     wide_cool = 2
     narrow_gap = 4
     arb_thresh = 0.95
-    inventory_cap = 40
-    skew_unit = 20
+    inventory_cap = 40.0
+    skew_unit = 20.0
+    size_tolerance = 0.5
     drift_decay = 0.80
     drift_thresh = 1.0
     drift_cool = 3
     mild_drift_thresh = 0.3
     drift_down_mul = 0.3
-    fast_decay = 0.0
-    fast_thresh = 0.5
-    fast_cool = 6
     jump_thresh = 3.5
     jump_cool = 12
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self._cool_bid = 0; self._cool_ask = 0
+        self._cool_bid = 0
+        self._cool_ask = 0
         self._prev_gap = 4
-        self._last_bid_sz = 0.0; self._last_ask_sz = 0.0
+        self._last_bid_sz = 0.0
+        self._last_ask_sz = 0.0
         self._prev_mid = None
         self._drift = 0.0
-        self._fast_drift = 0.0
         self._initial_gap = None
 
-    def on_step(self, state):
+    def on_step(self, state: StepState):
         bid_t = state.competitor_best_bid_ticks
         ask_t = state.competitor_best_ask_ticks
         mid = None if (bid_t is None or ask_t is None) else (bid_t + ask_t) / 2.0
+        d = 0.0
         if self._prev_mid is not None and mid is not None:
             d = mid - self._prev_mid
             self._drift = self.drift_decay * self._drift + d
-            self._fast_drift = self.fast_decay * self._fast_drift + d
         self._prev_mid = mid
+
         cool = self.narrow_cool if self._prev_gap <= self.narrow_gap else self.wide_cool
         if self._last_bid_sz > 0 and state.buy_filled_quantity >= self.arb_thresh * self._last_bid_sz:
             self._cool_bid = max(self._cool_bid, cool)
         if self._last_ask_sz > 0 and state.sell_filled_quantity >= self.arb_thresh * self._last_ask_sz:
             self._cool_ask = max(self._cool_ask, cool)
+
         if self._drift > self.drift_thresh:
             self._cool_ask = max(self._cool_ask, self.drift_cool)
         elif self._drift < -self.drift_thresh:
             self._cool_bid = max(self._cool_bid, self.drift_cool)
-        # Fast drift: catches sudden jumps that haven't yet built up the slow EWMA.
-        if self._fast_drift > self.fast_thresh:
-            self._cool_ask = max(self._cool_ask, self.fast_cool)
-        elif self._fast_drift < -self.fast_thresh:
-            self._cool_bid = max(self._cool_bid, self.fast_cool)
-        if abs(self._fast_drift) >= self.jump_thresh:
+
+        if abs(d) >= self.jump_thresh:
             self._cool_bid = max(self._cool_bid, self.jump_cool)
             self._cool_ask = max(self._cool_ask, self.jump_cool)
 
@@ -64,15 +79,19 @@ class Strategy(BaseStrategy):
             self._last_bid_sz = self._last_ask_sz = 0.0
             return [CancelAll()]
         self._prev_gap = ask_t - bid_t
+
         if self._initial_gap is None:
             self._initial_gap = ask_t - bid_t
         if self._initial_gap <= 2:
             self._last_bid_sz = self._last_ask_sz = 0.0
             return [CancelAll()]
-        my_bid_t = bid_t + 1; my_ask_t = ask_t - 1
+
+        my_bid_t = bid_t + 1
+        my_ask_t = ask_t - 1
         if my_bid_t >= my_ask_t:
             self._last_bid_sz = self._last_ask_sz = 0.0
             return [CancelAll()]
+
         gap = ask_t - bid_t
         if self._initial_gap <= 4:
             sz_mul = 0.5
@@ -81,27 +100,53 @@ class Strategy(BaseStrategy):
         else:
             sz_mul = 1.3
         sz = sz_mul * self.base_size * (1.0 + max(0, gap - 2) * self.spread_scale)
-        net = state.yes_inventory - state.no_inventory
-        bid_sz = max(1.0, sz * (1 - net/self.skew_unit))
-        ask_sz = max(1.0, sz * (1 + net/self.skew_unit))
+
+        net_inv = state.yes_inventory - state.no_inventory
+        bid_size = max(1.0, sz * (1.0 - net_inv / self.skew_unit))
+        ask_size = max(1.0, sz * (1.0 + net_inv / self.skew_unit))
         if self._drift > self.mild_drift_thresh:
-            ask_sz *= self.drift_down_mul
+            ask_size *= self.drift_down_mul
         elif self._drift < -self.mild_drift_thresh:
-            bid_sz *= self.drift_down_mul
-        bid_sz = max(1.0, bid_sz); ask_sz = max(1.0, ask_sz)
-        can_bid = self._cool_bid <= 0 and net < self.inventory_cap
-        can_ask = self._cool_ask <= 0 and net > -self.inventory_cap
-        acts = []; hb = False; ha = False
+            bid_size *= self.drift_down_mul
+        bid_size = max(1.0, bid_size)
+        ask_size = max(1.0, ask_size)
+
+        can_bid = self._cool_bid <= 0 and net_inv < self.inventory_cap
+        can_ask = self._cool_ask <= 0 and net_inv > -self.inventory_cap
+
+        actions: list = []
+        have_bid = False
+        have_ask = False
         for o in state.own_orders:
-            ob = o.side is Side.BUY and can_bid and o.price_ticks == my_bid_t and abs(o.remaining_quantity - bid_sz) < 0.5
-            oa = o.side is Side.SELL and can_ask and o.price_ticks == my_ask_t and abs(o.remaining_quantity - ask_sz) < 0.5
-            if ob: hb = True
-            elif oa: ha = True
-            else: acts.append(CancelOrder(o.order_id))
-        if can_bid and not hb: acts.append(PlaceOrder(Side.BUY, my_bid_t, bid_sz))
-        if can_ask and not ha: acts.append(PlaceOrder(Side.SELL, my_ask_t, ask_sz))
-        self._last_bid_sz = bid_sz if can_bid else 0.0
-        self._last_ask_sz = ask_sz if can_ask else 0.0
-        if self._cool_bid > 0: self._cool_bid -= 1
-        if self._cool_ask > 0: self._cool_ask -= 1
-        return acts
+            ok_b = (
+                o.side is Side.BUY
+                and can_bid
+                and o.price_ticks == my_bid_t
+                and abs(o.remaining_quantity - bid_size) < self.size_tolerance
+            )
+            ok_a = (
+                o.side is Side.SELL
+                and can_ask
+                and o.price_ticks == my_ask_t
+                and abs(o.remaining_quantity - ask_size) < self.size_tolerance
+            )
+            if ok_b:
+                have_bid = True
+            elif ok_a:
+                have_ask = True
+            else:
+                actions.append(CancelOrder(o.order_id))
+
+        if can_bid and not have_bid:
+            actions.append(PlaceOrder(side=Side.BUY, price_ticks=my_bid_t, quantity=bid_size))
+        if can_ask and not have_ask:
+            actions.append(PlaceOrder(side=Side.SELL, price_ticks=my_ask_t, quantity=ask_size))
+
+        self._last_bid_sz = bid_size if can_bid else 0.0
+        self._last_ask_sz = ask_size if can_ask else 0.0
+        if self._cool_bid > 0:
+            self._cool_bid -= 1
+        if self._cool_ask > 0:
+            self._cool_ask -= 1
+
+        return actions
