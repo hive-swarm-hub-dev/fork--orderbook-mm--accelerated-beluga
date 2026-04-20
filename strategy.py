@@ -11,19 +11,16 @@ from orderbook_pm_challenge.types import (
 
 
 class Strategy(BaseStrategy):
-    """V19: V18 minus fast single-step cool.
+    """V24: Refined cool lengths — narrow=4,wide=2,drift=1.
 
-    20-seed × 200-sim stability test showed fast_cool was noise-driven:
-    removing it was net-neutral (10.92 vs 10.85). Slow drift EWMA + jump
-    cool already catch sustained and extreme cases; the middle-tier fast
-    cool wasn't adding signal. Simpler = fewer overfit parameters.
-
-    Jump cool is load-bearing (-0.39 without). Mild drift shrink kept.
+    10-config 25-seed sweep found c_4_2_1 beats V23_base by +0.70.
+    5-seed held-out confirm: V23=14.94, V24=15.73, delta=+0.79.
+    Shorter cools recover retail revenue lost to overcautious cooldown.
     """
 
     base_size = 5.0
     spread_scale = 0.7
-    narrow_cool = 7
+    narrow_cool = 4
     wide_cool = 2
     narrow_gap = 4
     arb_thresh = 0.95
@@ -32,7 +29,7 @@ class Strategy(BaseStrategy):
     size_tolerance = 0.5
     drift_decay = 0.80
     drift_thresh = 1.0
-    drift_cool = 3
+    drift_cool = 1
     mild_drift_thresh = 0.3
     drift_down_mul = 0.3
     jump_thresh = 3.5
