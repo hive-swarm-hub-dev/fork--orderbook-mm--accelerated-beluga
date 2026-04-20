@@ -37,7 +37,7 @@ class Strategy(BaseStrategy):
     drift_down_mul = 0.3
     jump_thresh = 3.5
     jump_cool = 12
-    extreme_boost = 0.25
+    extreme_boost = 0.35
 
     def __init__(self) -> None:
         super().__init__()
