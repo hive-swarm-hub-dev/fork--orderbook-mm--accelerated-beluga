@@ -38,6 +38,7 @@ class Strategy(BaseStrategy):
     jump_thresh = 3.5
     jump_cool = 12
     extreme_boost = 0.35
+    retail_cap_mul = 1.5
 
     def __init__(self) -> None:
         super().__init__()
@@ -109,6 +110,13 @@ class Strategy(BaseStrategy):
         inv_var_ratio = 1.0 / (4.0 * p_est * (1.0 - p_est))
         extreme_mul = 1.0 + self.extreme_boost * (inv_var_ratio - 1.0)
         sz = sz_mul * self.base_size * (1.0 + max(0, gap - 2) * self.spread_scale) * extreme_mul
+        # Cap quote size at retail_cap_mul * retail_qty_estimate.
+        # retail_qty ≈ notional_mean / p_t (from simulator retail.py + market.py).
+        # At mid (p=0.5), retail ~8 shares. Pre-cap, V22 quoted 33. Arb exposure
+        # scaled linearly with size while retail capture saturated at 8. Cap ->
+        # reduce arb loss at mid without losing fills.
+        retail_qty_est = 4.5 / p_est
+        sz = min(sz, self.retail_cap_mul * retail_qty_est)
 
         net_inv = state.yes_inventory - state.no_inventory
         bid_size = max(1.0, sz * (1.0 - net_inv / self.skew_unit))
