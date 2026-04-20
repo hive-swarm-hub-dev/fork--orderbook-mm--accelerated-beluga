@@ -37,6 +37,7 @@ class Strategy(BaseStrategy):
     drift_down_mul = 0.3
     jump_thresh = 3.5
     jump_cool = 12
+    extreme_boost = 0.5
 
     def __init__(self) -> None:
         super().__init__()
@@ -99,7 +100,14 @@ class Strategy(BaseStrategy):
             sz_mul = 1.0
         else:
             sz_mul = 1.3
-        sz = sz_mul * self.base_size * (1.0 + max(0, gap - 2) * self.spread_scale)
+        # Extreme-p_t boost: retail fill qty = notional/p_t is bigger near
+        # 0/1 boundaries, and sigma_p (1-step p_t variance) is smaller there,
+        # so more retail edge with less arb risk. Scale size linearly with
+        # distance of comp midpoint from 50 ticks.
+        comp_mid = (bid_t + ask_t) / 2.0
+        extreme_dist = 50 - min(comp_mid, 100 - comp_mid)
+        extreme_mul = 1.0 + self.extreme_boost * extreme_dist / 50.0
+        sz = sz_mul * self.base_size * (1.0 + max(0, gap - 2) * self.spread_scale) * extreme_mul
 
         net_inv = state.yes_inventory - state.no_inventory
         bid_size = max(1.0, sz * (1.0 - net_inv / self.skew_unit))
