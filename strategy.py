@@ -74,7 +74,12 @@ class Strategy(BaseStrategy):
             self._last_bid_sz = self._last_ask_sz = 0.0
             return [CancelAll()]
         gap = ask_t - bid_t
-        sz_mul = 0.5 if self._initial_gap <= 4 else 1.0
+        if self._initial_gap <= 4:
+            sz_mul = 0.5
+        elif self._initial_gap <= 6:
+            sz_mul = 1.0
+        else:
+            sz_mul = 1.3
         sz = sz_mul * self.base_size * (1.0 + max(0, gap - 2) * self.spread_scale)
         net = state.yes_inventory - state.no_inventory
         bid_sz = max(1.0, sz * (1 - net/self.skew_unit))
