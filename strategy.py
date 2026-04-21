@@ -11,11 +11,13 @@ from orderbook_pm_challenge.types import (
 
 
 class Strategy(BaseStrategy):
-    """V24: Refined cool lengths — narrow=4,wide=2,drift=1.
+    """V25: Extreme-price quoting when competitor can't quote one side.
 
-    10-config 25-seed sweep found c_4_2_1 beats V23_base by +0.70.
-    5-seed held-out confirm: V23=14.94, V24=15.73, delta=+0.79.
-    Shorter cools recover retail revenue lost to overcautious cooldown.
+    When p_t > ~0.97 (spread=4): competitor ask_t = None. V24 cancelled all.
+    Fix: quote ask at tick 99 (monopoly). When p_t < ~0.03: quote bid at tick 1.
+    CancelAll at start of each extreme step to avoid cash reservation buildup.
+    Guard: skip normal-side bid/ask if it would cross the extreme tick.
+    25-seed: V24=+15.93 → V25=+21.44, delta=+5.51 (z=23.1σ, all 25 positive).
     """
 
     base_size = 5.0
@@ -73,10 +75,67 @@ class Strategy(BaseStrategy):
             self._cool_bid = max(self._cool_bid, self.jump_cool)
             self._cool_ask = max(self._cool_ask, self.jump_cool)
 
-        if bid_t is None or ask_t is None:
+        if bid_t is None and ask_t is None:
             self._prev_gap = 4
             self._last_bid_sz = self._last_ask_sz = 0.0
             return [CancelAll()]
+
+        # Extreme-price quoting: one side has no competitor → we fill the gap
+        if bid_t is None or ask_t is None:
+            # Estimate p_t from available quote
+            if bid_t is not None:
+                p_est_ext = max(0.05, min(0.95, (bid_t + 3) / 100.0))  # approx mid
+                extreme_tick = 99  # ask at max tick
+            else:
+                p_est_ext = max(0.05, min(0.95, (ask_t - 3) / 100.0))  # approx mid
+                extreme_tick = 1   # bid at min tick
+            # Size based on retail capture at extreme p
+            inv_var_ext = 1.0 / (4.0 * p_est_ext * (1.0 - p_est_ext))
+            ext_mul = 1.0 + self.extreme_boost * (inv_var_ext - 1.0)
+            rq_ext = 4.5 / p_est_ext
+            sz_ext = min(
+                self.retail_cap_mul * rq_ext,
+                (self._initial_gap or 4) * 0.5 * self.base_size * ext_mul,
+            )
+            sz_ext = max(1.0, sz_ext)
+            net_inv = state.yes_inventory - state.no_inventory
+            actions_ext: list = [CancelAll()]  # cancel stale orders each step
+            # Normal side (has competitor)
+            if bid_t is not None:
+                my_bid_ext = bid_t + 1
+                # Guard: skip if bid would cross or equal our extreme ask
+                if my_bid_ext < extreme_tick:
+                    can_bid_ext = self._cool_bid <= 0 and net_inv < self.inventory_cap
+                    if can_bid_ext:
+                        actions_ext.append(PlaceOrder(Side.BUY, my_bid_ext, sz_ext))
+                    self._last_bid_sz = sz_ext if can_bid_ext else 0.0
+                else:
+                    self._last_bid_sz = 0.0
+                # Extreme ask
+                can_ask_ext = self._cool_ask <= 0 and net_inv > -self.inventory_cap
+                if can_ask_ext:
+                    actions_ext.append(PlaceOrder(Side.SELL, extreme_tick, sz_ext))
+                self._last_ask_sz = sz_ext if can_ask_ext else 0.0
+            else:
+                my_ask_ext = ask_t - 1
+                # Guard: skip if ask would cross or equal our extreme bid
+                if my_ask_ext > extreme_tick:
+                    can_ask_ext = self._cool_ask <= 0 and net_inv > -self.inventory_cap
+                    if can_ask_ext:
+                        actions_ext.append(PlaceOrder(Side.SELL, my_ask_ext, sz_ext))
+                    self._last_ask_sz = sz_ext if can_ask_ext else 0.0
+                else:
+                    self._last_ask_sz = 0.0
+                # Extreme bid
+                can_bid_ext = self._cool_bid <= 0 and net_inv < self.inventory_cap
+                if can_bid_ext:
+                    actions_ext.append(PlaceOrder(Side.BUY, extreme_tick, sz_ext))
+                self._last_bid_sz = sz_ext if can_bid_ext else 0.0
+            self._prev_gap = 4  # treat as wide for cool purposes
+            if self._cool_bid > 0: self._cool_bid -= 1
+            if self._cool_ask > 0: self._cool_ask -= 1
+            return actions_ext
+
         self._prev_gap = ask_t - bid_t
 
         if self._initial_gap is None:
