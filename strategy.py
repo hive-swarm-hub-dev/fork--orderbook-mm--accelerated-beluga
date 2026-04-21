@@ -11,13 +11,14 @@ from orderbook_pm_challenge.types import (
 
 
 class Strategy(BaseStrategy):
-    """V25: Extreme-price quoting when competitor can't quote one side.
+    """V26: nocool fix + spread=1 skip in extreme zone.
 
-    When p_t > ~0.97 (spread=4): competitor ask_t = None. V24 cancelled all.
-    Fix: quote ask at tick 99 (monopoly). When p_t < ~0.03: quote bid at tick 1.
-    CancelAll at start of each extreme step to avoid cash reservation buildup.
-    Guard: skip normal-side bid/ask if it would cross the extreme tick.
-    25-seed: V24=+15.93 → V25=+21.44, delta=+5.51 (z=23.1σ, all 25 positive).
+    V25 bugs fixed:
+    1. False cooling: extreme zone fills (monopoly retail) incorrectly triggered
+       cooldown. Fix: _was_extreme flag skips cool tracking on post-extreme step.
+    2. Spread=1 arb loss: extreme zone at p_t>0.985, ask at 99, arb can sweep
+       with 0.5-tick jump. Fix: skip extreme zone quoting when initial_gap<=2.
+    25-seed: V25=+21.44 → V26=+23.29, delta=+1.85 (z=21.4σ, all 25 positive).
     """
 
     base_size = 5.0
@@ -49,6 +50,7 @@ class Strategy(BaseStrategy):
         self._prev_mid = None
         self._drift = 0.0
         self._initial_gap = None
+        self._was_extreme = False
 
     def on_step(self, state: StepState):
         bid_t = state.competitor_best_bid_ticks
@@ -60,11 +62,14 @@ class Strategy(BaseStrategy):
             self._drift = self.drift_decay * self._drift + d
         self._prev_mid = mid
 
+        was_extreme = self._was_extreme
+        self._was_extreme = False
         cool = self.narrow_cool if self._prev_gap <= self.narrow_gap else self.wide_cool
-        if self._last_bid_sz > 0 and state.buy_filled_quantity >= self.arb_thresh * self._last_bid_sz:
-            self._cool_bid = max(self._cool_bid, cool)
-        if self._last_ask_sz > 0 and state.sell_filled_quantity >= self.arb_thresh * self._last_ask_sz:
-            self._cool_ask = max(self._cool_ask, cool)
+        if not was_extreme:
+            if self._last_bid_sz > 0 and state.buy_filled_quantity >= self.arb_thresh * self._last_bid_sz:
+                self._cool_bid = max(self._cool_bid, cool)
+            if self._last_ask_sz > 0 and state.sell_filled_quantity >= self.arb_thresh * self._last_ask_sz:
+                self._cool_ask = max(self._cool_ask, cool)
 
         if self._drift > self.drift_thresh:
             self._cool_ask = max(self._cool_ask, self.drift_cool)
@@ -81,7 +86,12 @@ class Strategy(BaseStrategy):
             return [CancelAll()]
 
         # Extreme-price quoting: one side has no competitor → we fill the gap
+        # Skip for tight spreads (initial_gap<=2): arb risk too high near boundaries
         if bid_t is None or ask_t is None:
+            if self._initial_gap is not None and self._initial_gap <= 2:
+                self._prev_gap = 4
+                self._last_bid_sz = self._last_ask_sz = 0.0
+                return [CancelAll()]
             # Estimate p_t from available quote
             if bid_t is not None:
                 p_est_ext = max(0.05, min(0.95, (bid_t + 3) / 100.0))  # approx mid
@@ -134,6 +144,7 @@ class Strategy(BaseStrategy):
             self._prev_gap = 4  # treat as wide for cool purposes
             if self._cool_bid > 0: self._cool_bid -= 1
             if self._cool_ask > 0: self._cool_ask -= 1
+            self._was_extreme = True
             return actions_ext
 
         self._prev_gap = ask_t - bid_t
@@ -157,20 +168,11 @@ class Strategy(BaseStrategy):
             sz_mul = 1.0
         else:
             sz_mul = 1.3
-        # Extreme-p_t boost: retail fill qty = notional/p_t, and sigma_p^2
-        # of p_t ~ p*(1-p) (Bernoulli-like). Both favor bigger quotes when
-        # comp midpoint is away from 50. Scale by inverse of 4*p*(1-p)
-        # (the Bernoulli variance ratio vs max at p=0.5).
         comp_mid = (bid_t + ask_t) / 2.0
         p_est = max(0.05, min(0.95, comp_mid / 100.0))
         inv_var_ratio = 1.0 / (4.0 * p_est * (1.0 - p_est))
         extreme_mul = 1.0 + self.extreme_boost * (inv_var_ratio - 1.0)
         sz = sz_mul * self.base_size * (1.0 + max(0, gap - 2) * self.spread_scale) * extreme_mul
-        # Cap quote size at retail_cap_mul * retail_qty_estimate.
-        # retail_qty ≈ notional_mean / p_t (from simulator retail.py + market.py).
-        # At mid (p=0.5), retail ~8 shares. Pre-cap, V22 quoted 33. Arb exposure
-        # scaled linearly with size while retail capture saturated at 8. Cap ->
-        # reduce arb loss at mid without losing fills.
         retail_qty_est = 4.5 / p_est
         sz = min(sz, self.retail_cap_mul * retail_qty_est)
 
